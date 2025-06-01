@@ -1,0 +1,355 @@
+# === README.md ===
+   1 | # ThreadPoolParallelSortQApp
+   2 | Multithreaded Example app in Qt 5 by Claude
+#
+
+# === main.cpp ===
+   1 | #include "mainwindow.h"
+   2 | 
+   3 | #include <QApplication>
+   4 | 
+   5 | int main(int argc, char *argv[])
+   6 | {
+   7 |     QApplication a(argc, argv);
+   8 |     MainWindow w;
+   9 |     w.show();
+  10 |     return a.exec();
+  11 | }
+#
+
+# === mainwindow.cpp ===
+   1 | // ThreadPoolParallelSort -- by Claude Opus 4.
+   2 | // Modified to use QApplication with GUI and cout output instead of console
+   3 | // Where totalCores is (probably) the number of cpu cores, allocate totalCores-1 threads to sort a vector
+   4 | // sort a vector of random numbers.  This is a basic example of Qt multithreading.
+   5 | 
+   6 | // main.cpp
+   7 | #include <QApplication>
+   8 | #include <QWidget>
+   9 | #include <QVBoxLayout>
+  10 | #include <QLabel>
+  11 | #include <QPushButton>
+  12 | #include <QThreadPool>
+  13 | #include <QRunnable>
+  14 | #include <QThread>
+  15 | #include <QElapsedTimer>
+  16 | #include <QMutex>
+  17 | #include <vector>
+  18 | #include <algorithm>
+  19 | #include <random>
+  20 | #include <atomic>
+  21 | #include <iostream>
+  22 | #include <iomanip>
+  23 | 
+  24 | // Global mutex for thread-safe printing
+  25 | QMutex printMutex;
+  26 | 
+  27 | // Task to sort a chunk of the vector
+  28 | class SortTask : public QRunnable {
+  29 | private:
+  30 |     std::vector<int>* data;
+  31 |     int startIndex;
+  32 |     int endIndex;
+  33 |     int taskId;
+  34 | 
+  35 | public:
+  36 |     SortTask(std::vector<int>* vec, int start, int end, int id)
+  37 |         : data(vec), startIndex(start), endIndex(end), taskId(id) {
+  38 |         setAutoDelete(true);  // QThreadPool will delete this after run()
+  39 |     }
+  40 | 
+  41 |     void run() override {
+  42 |         {
+  43 |             QMutexLocker locker(&printMutex);
+  44 |             std::cout << "[Thread " << QThread::currentThreadId() << "] Task " << taskId
+  45 |                       << " sorting range [" << startIndex << "-" << endIndex << ")" << std::endl;
+  46 |         }
+  47 | 
+  48 |         // Sort this chunk of the vector
+  49 |         std::sort(data->begin() + startIndex, data->begin() + endIndex);
+  50 | 
+  51 |         {
+  52 |             QMutexLocker locker(&printMutex);
+  53 |             std::cout << "[Thread " << QThread::currentThreadId() << "] Task " << taskId
+  54 |                       << " completed sorting" << std::endl;
+  55 |         }
+  56 |     }
+  57 | };
+  58 | 
+  59 | // Task to merge sorted chunks
+  60 | class MergeTask : public QRunnable {
+  61 | private:
+  62 |     std::vector<int>* data;
+  63 |     int start1, end1;  // First sorted range
+  64 |     int start2, end2;  // Second sorted range
+  65 |     int taskId;
+  66 | 
+  67 | public:
+  68 |     MergeTask(std::vector<int>* vec, int s1, int e1, int s2, int e2, int id)
+  69 |         : data(vec), start1(s1), end1(e1), start2(s2), end2(e2), taskId(id) {
+  70 |         setAutoDelete(true);
+  71 |     }
+  72 | 
+  73 |     void run() override {
+  74 |         {
+  75 |             QMutexLocker locker(&printMutex);
+  76 |             std::cout << "[Thread " << QThread::currentThreadId() << "] Merge Task " << taskId
+  77 |                       << " merging ranges [" << start1 << "-" << end1 << ") and ["
+  78 |                       << start2 << "-" << end2 << ")" << std::endl;
+  79 |         }
+  80 | 
+  81 |         // Create temporary vector for merged result
+  82 |         std::vector<int> temp;
+  83 |         temp.reserve(end2 - start1);
+  84 | 
+  85 |         // Merge the two sorted ranges
+  86 |         std::merge(data->begin() + start1, data->begin() + end1,
+  87 |                    data->begin() + start2, data->begin() + end2,
+  88 |                    std::back_inserter(temp));
+  89 | 
+  90 |         // Copy back to original vector
+  91 |         std::copy(temp.begin(), temp.end(), data->begin() + start1);
+  92 | 
+  93 |         {
+  94 |             QMutexLocker locker(&printMutex);
+  95 |             std::cout << "[Thread " << QThread::currentThreadId() << "] Merge Task " << taskId
+  96 |                       << " completed" << std::endl;
+  97 |         }
+  98 |     }
+  99 | };
+ 100 | 
+ 101 | class ParallelSorter {
+ 102 | private:
+ 103 |     QThreadPool* threadPool;
+ 104 |     std::vector<int>* data;
+ 105 | 
+ 106 | public:
+ 107 |     ParallelSorter(std::vector<int>* vec) : data(vec) {
+ 108 |         threadPool = new QThreadPool();
+ 109 |         int totalCores = QThread::idealThreadCount();
+ 110 |         int usableCores = std::max(1, totalCores - 1);  // Leave 1 core for OS
+ 111 | 
+ 112 |         threadPool->setMaxThreadCount(usableCores);
+ 113 | 
+ 114 |         std::cout << "System has " << totalCores << " cores" << std::endl;
+ 115 |         std::cout << "Using " << usableCores << " threads for sorting" << std::endl;
+ 116 |         std::cout << "Main thread ID: " << QThread::currentThreadId() << std::endl;
+ 117 |     }
+ 118 | 
+ 119 |     ~ParallelSorter() {
+ 120 |         delete threadPool;
+ 121 |     }
+ 122 | 
+ 123 |     void parallelSort() {
+ 124 |         int vectorSize = data->size();
+ 125 |         int numThreads = threadPool->maxThreadCount();
+ 126 |         int chunkSize = vectorSize / numThreads;
+ 127 | 
+ 128 |         std::cout << "=== PHASE 1: Sorting chunks in parallel ===" << std::endl;
+ 129 |         std::cout << "Vector size: " << vectorSize << std::endl;
+ 130 |         std::cout << "Chunk size: " << chunkSize << std::endl;
+ 131 | 
+ 132 |         // Phase 1: Sort chunks in parallel
+ 133 |         for (int i = 0; i < numThreads; i++) {
+ 134 |             int start = i * chunkSize;
+ 135 |             int end = (i == numThreads - 1) ? vectorSize : (i + 1) * chunkSize;
+ 136 | 
+ 137 |             SortTask* task = new SortTask(data, start, end, i);
+ 138 |             threadPool->start(task);
+ 139 |         }
+ 140 | 
+ 141 |         // Wait for all sorting tasks to complete
+ 142 |         threadPool->waitForDone();
+ 143 | 
+ 144 |         std::cout << "=== PHASE 2: Merging sorted chunks ===" << std::endl;
+ 145 | 
+ 146 |         // Phase 2: Merge sorted chunks
+ 147 |         // We'll do a tree-like merge for efficiency
+ 148 |         int numChunks = numThreads;
+ 149 |         int mergeTaskId = 0;
+ 150 | 
+ 151 |         while (numChunks > 1) {
+ 152 |             int newNumChunks = 0;
+ 153 | 
+ 154 |             for (int i = 0; i < numChunks; i += 2) {
+ 155 |                 if (i + 1 < numChunks) {
+ 156 |                     // Merge two adjacent chunks
+ 157 |                     int start1 = (i * vectorSize) / numThreads;
+ 158 |                     int end1 = ((i + 1) * vectorSize) / numThreads;
+ 159 |                     int start2 = end1;
+ 160 |                     int end2 = ((i + 2) * vectorSize) / numThreads;
+ 161 | 
+ 162 |                     if (i + 2 == numChunks) {
+ 163 |                         end2 = vectorSize;  // Last chunk might be larger
+ 164 |                     }
+ 165 | 
+ 166 |                     MergeTask* mergeTask = new MergeTask(data, start1, end1, start2, end2, mergeTaskId++);
+ 167 |                     threadPool->start(mergeTask);
+ 168 | 
+ 169 |                     newNumChunks++;
+ 170 |                 }
+ 171 |             }
+ 172 | 
+ 173 |             threadPool->waitForDone();
+ 174 |             numChunks = newNumChunks;
+ 175 |         }
+ 176 | 
+ 177 |         std::cout << "=== Sorting complete! ===" << std::endl;
+ 178 |     }
+ 179 | };
+ 180 | 
+ 181 | // Helper function to verify the vector is sorted
+ 182 | bool isSorted(const std::vector<int>& vec) {
+ 183 |     for (size_t i = 1; i < vec.size(); i++) {
+ 184 |         if (vec[i] < vec[i-1]) {
+ 185 |             return false;
+ 186 |         }
+ 187 |     }
+ 188 |     return true;
+ 189 | }
+ 190 | 
+ 191 | // Helper function to print first and last elements
+ 192 | void printSample(const std::vector<int>& vec, const std::string& label) {
+ 193 |     QMutexLocker locker(&printMutex);
+ 194 |     std::cout << label << std::endl;
+ 195 | 
+ 196 |     // Print first 10 elements
+ 197 |     std::cout << "First 10 elements: ";
+ 198 |     int firstCount = std::min(10, (int)vec.size());
+ 199 |     for (int i = 0; i < firstCount; i++) {
+ 200 |         std::cout << vec[i];
+ 201 |         if (i < firstCount - 1) std::cout << ", ";
+ 202 |     }
+ 203 |     std::cout << std::endl;
+ 204 | 
+ 205 |     // Print last 10 elements
+ 206 |     std::cout << "Last 10 elements: ";
+ 207 |     int lastCount = std::min(10, (int)vec.size());
+ 208 |     for (size_t i = vec.size() - lastCount; i < vec.size(); i++) {
+ 209 |         std::cout << vec[i];
+ 210 |         if (i < vec.size() - 1) std::cout << ", ";
+ 211 |     }
+ 212 |     std::cout << std::endl;
+ 213 | }
+ 214 | 
+ 215 | class MainWindow : public QWidget {
+ 216 |     Q_OBJECT
+ 217 | 
+ 218 | private:
+ 219 |     QLabel* statusLabel;
+ 220 |     QPushButton* startButton;
+ 221 |     std::vector<int> data;
+ 222 |     static const int VECTOR_SIZE = 1000000;  // 1 million integers
+ 223 | 
+ 224 | public:
+ 225 |     MainWindow(QWidget* parent = nullptr) : QWidget(parent) {
+ 226 |         setWindowTitle("Parallel Sort Demo");
+ 227 |         setFixedSize(400, 200);
+ 228 | 
+ 229 |         // Create layout
+ 230 |         QVBoxLayout* layout = new QVBoxLayout(this);
+ 231 | 
+ 232 |         // Create widgets
+ 233 |         statusLabel = new QLabel("Click 'Start Sorting' to begin parallel sort demo");
+ 234 |         statusLabel->setWordWrap(true);
+ 235 |         startButton = new QPushButton("Start Sorting");
+ 236 | 
+ 237 |         // Add to layout
+ 238 |         layout->addWidget(statusLabel);
+ 239 |         layout->addWidget(startButton);
+ 240 | 
+ 241 |         // Connect button
+ 242 |         connect(startButton, &QPushButton::clicked, this, &MainWindow::runSortingDemo);
+ 243 | 
+ 244 |         std::cout << "GUI Application started. Check Application Output for sorting details." << std::endl;
+ 245 |     }
+ 246 | 
+ 247 | private slots:
+ 248 |     void runSortingDemo() {
+ 249 |         startButton->setEnabled(false);
+ 250 |         statusLabel->setText("Sorting in progress... Check Application Output for details.");
+ 251 | 
+ 252 |         // Create a vector of random integers
+ 253 |         data.resize(VECTOR_SIZE);
+ 254 | 
+ 255 |         // Fill with random numbers
+ 256 |         std::random_device rd;
+ 257 |         std::mt19937 gen(rd());
+ 258 |         std::uniform_int_distribution<> dis(1, 1000000);
+ 259 | 
+ 260 |         std::cout << "\nGenerating " << VECTOR_SIZE << " random integers..." << std::endl;
+ 261 |         for (int i = 0; i < VECTOR_SIZE; i++) {
+ 262 |             data[i] = dis(gen);
+ 263 |         }
+ 264 | 
+ 265 |         printSample(data, "\nOriginal vector (unsorted):");
+ 266 | 
+ 267 |         // Time the parallel sort
+ 268 |         QElapsedTimer timer;
+ 269 |         timer.start();
+ 270 | 
+ 271 |         // Perform parallel sort
+ 272 |         ParallelSorter sorter(&data);
+ 273 |         sorter.parallelSort();
+ 274 | 
+ 275 |         qint64 parallelTime = timer.elapsed();
+ 276 | 
+ 277 |         // Verify the result
+ 278 |         bool sorted = isSorted(data);
+ 279 |         std::cout << "\nVector is sorted: " << (sorted ? "true" : "false") << std::endl;
+ 280 | 
+ 281 |         printSample(data, "\nSorted vector:");
+ 282 | 
+ 283 |         std::cout << "\nParallel sort took: " << parallelTime << " ms" << std::endl;
+ 284 | 
+ 285 |         // For comparison, let's time a single-threaded sort
+ 286 |         std::cout << "\nNow testing single-threaded sort for comparison..." << std::endl;
+ 287 | 
+ 288 |         // Regenerate random data
+ 289 |         for (int i = 0; i < VECTOR_SIZE; i++) {
+ 290 |             data[i] = dis(gen);
+ 291 |         }
+ 292 | 
+ 293 |         timer.restart();
+ 294 |         std::sort(data.begin(), data.end());
+ 295 |         qint64 singleThreadTime = timer.elapsed();
+ 296 | 
+ 297 |         std::cout << "Single-threaded sort took: " << singleThreadTime << " ms" << std::endl;
+ 298 |         std::cout << "Speedup: " << std::fixed << std::setprecision(2)
+ 299 |                   << (double)singleThreadTime / parallelTime << "x" << std::endl;
+ 300 | 
+ 301 |         statusLabel->setText("Sorting complete! Check Application Output for results.");
+ 302 |         startButton->setEnabled(true);
+ 303 |     }
+ 304 | };
+ 305 | 
+ 306 | int main(int argc, char *argv[])
+ 307 | {
+ 308 |     QApplication app(argc, argv);
+ 309 | 
+ 310 |     MainWindow window;
+ 311 |     window.show();
+ 312 | 
+ 313 |     return app.exec();
+ 314 | }
+ 315 | 
+ 316 | #include "main.moc"
+#
+
+# === mainwindow.h ===
+   1 | #ifndef MAINWINDOW_H
+   2 | #define MAINWINDOW_H
+   3 | 
+   4 | #include <QMainWindow>
+   5 | 
+   6 | class MainWindow : public QMainWindow
+   7 | {
+   8 |     Q_OBJECT
+   9 | 
+  10 | public:
+  11 |     MainWindow(QWidget *parent = nullptr);
+  12 |     ~MainWindow();
+  13 | };
+  14 | #endif // MAINWINDOW_H
+#
+
