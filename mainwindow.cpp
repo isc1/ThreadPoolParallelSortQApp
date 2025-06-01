@@ -12,6 +12,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QMetaObject>
+#include <QApplication>
 #include <algorithm>
 #include <random>
 #include <atomic>
@@ -19,8 +20,29 @@
 #include <iomanip>
 #include <sstream>
 
-// Forward declaration
-class MainWindow;
+// Random generation task to keep UI responsive
+class RandomGenTask : public QRunnable {
+private:
+    std::vector<int>* data;
+    int startIndex;
+    int endIndex;
+
+public:
+    RandomGenTask(std::vector<int>* vec, int start, int end)
+        : data(vec), startIndex(start), endIndex(end) {
+        setAutoDelete(true);
+    }
+
+    void run() override {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(1, MainWindow::VECTOR_SIZE);
+
+        for (int i = startIndex; i < endIndex; i++) {
+            (*data)[i] = dis(gen);
+        }
+    }
+};
 
 // Global pointer to main window for output
 MainWindow* g_mainWindow = nullptr;
@@ -56,6 +78,12 @@ public:
 
         // Sort this chunk of the vector
         std::sort(data->begin() + startIndex, data->begin() + endIndex);
+
+        // Add controlled delay to limit core usage
+        if (MainWindow::USE_PCT_CORE < 100) {
+            int delayMs = (100 - MainWindow::USE_PCT_CORE) * 2; // Simple scaling
+            QThread::msleep(delayMs);
+        }
 
         QString endMsg = QString("[Thread %1] Task %2 completed sorting")
                         .arg((quintptr)QThread::currentThreadId())
@@ -100,6 +128,12 @@ public:
         // Copy back to original vector
         std::copy(temp.begin(), temp.end(), data->begin() + start1);
 
+        // Add controlled delay to limit core usage
+        if (MainWindow::USE_PCT_CORE < 100) {
+            int delayMs = (100 - MainWindow::USE_PCT_CORE) * 2; // Simple scaling
+            QThread::msleep(delayMs);
+        }
+
         QString endMsg = QString("[Thread %1] Merge Task %2 completed")
                         .arg((quintptr)QThread::currentThreadId())
                         .arg(taskId);
@@ -122,6 +156,7 @@ public:
 
         appendToOutput(QString("System has %1 cores").arg(totalCores));
         appendToOutput(QString("Using %1 threads for sorting").arg(usableCores));
+        appendToOutput(QString("Core utilization set to %1%").arg(MainWindow::USE_PCT_CORE));
         appendToOutput(QString("Main thread ID: %1").arg((quintptr)QThread::currentThreadId()));
     }
 
@@ -147,8 +182,10 @@ public:
             threadPool->start(task);
         }
 
-        // Wait for all sorting tasks to complete
-        threadPool->waitForDone();
+        // Wait for all sorting tasks to complete (non-blocking check)
+        while (!threadPool->waitForDone(100)) {
+            QApplication::processEvents(); // Keep UI responsive
+        }
 
         appendToOutput("=== PHASE 2: Merging sorted chunks ===");
 
@@ -188,7 +225,9 @@ public:
                 }
             }
 
-            threadPool->waitForDone();
+            while (!threadPool->waitForDone(100)) {
+                QApplication::processEvents(); // Keep UI responsive
+            }
             chunks = newChunks;
         }
 
@@ -300,15 +339,27 @@ void MainWindow::runSortingDemo() {
     // Create a vector of random integers
     data.resize(VECTOR_SIZE);
 
-    // Fill with random numbers
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(1, VECTOR_SIZE);
+    // Generate random numbers using background threads
+    appendOutput(QString("Generating %1 random integers using background threads...").arg(VECTOR_SIZE));
 
-    appendOutput(QString("Generating %1 random integers...").arg(VECTOR_SIZE));
-    for (int i = 0; i < VECTOR_SIZE; i++) {
-        data[i] = dis(gen);
+    QThreadPool* genPool = new QThreadPool();
+    int numGenThreads = std::min(4, QThread::idealThreadCount()); // Use fewer threads for generation
+    genPool->setMaxThreadCount(numGenThreads);
+
+    int genChunkSize = VECTOR_SIZE / numGenThreads;
+    for (int i = 0; i < numGenThreads; i++) {
+        int start = i * genChunkSize;
+        int end = (i == numGenThreads - 1) ? VECTOR_SIZE : (i + 1) * genChunkSize;
+
+        RandomGenTask* genTask = new RandomGenTask(&data, start, end);
+        genPool->start(genTask);
     }
+
+    // Wait for generation to complete (keep UI responsive)
+    while (!genPool->waitForDone(100)) {
+        QApplication::processEvents();
+    }
+    delete genPool;
 
     printSample(data, "\nOriginal vector (unsorted):");
 
@@ -332,10 +383,21 @@ void MainWindow::runSortingDemo() {
 
     // For comparison, let's time a single-threaded sort
     appendOutput("\nNow testing single-threaded sort for comparison...");
+    appendOutput("Regenerating random data...");
 
-    // Regenerate random data
-    for (int i = 0; i < VECTOR_SIZE; i++) {
-        data[i] = dis(gen);
+    // Regenerate random data using background threads
+    for (int i = 0; i < numGenThreads; i++) {
+        int start = i * genChunkSize;
+        int end = (i == numGenThreads - 1) ? VECTOR_SIZE : (i + 1) * genChunkSize;
+
+        RandomGenTask* genTask = new RandomGenTask(&data, start, end);
+        genPool = new QThreadPool();
+        genPool->setMaxThreadCount(1);
+        genPool->start(genTask);
+        while (!genPool->waitForDone(100)) {
+            QApplication::processEvents();
+        }
+        delete genPool;
     }
 
     timer.restart();

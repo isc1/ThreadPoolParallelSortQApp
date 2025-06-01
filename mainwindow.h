@@ -21,6 +21,10 @@ public:
     // Thread-safe method to append text to the output
     void appendOutput(const QString& text);
 
+    // Public constants that other classes can access
+    static const int VECTOR_SIZE = 100000000;
+    static const int USE_PCT_CORE = 80;  // Use 80% of each core's capacity
+
 private slots:
     void runSortingDemo();
     void clearOutput();
@@ -32,7 +36,6 @@ private:
     QTextEdit* outputText;
     std::vector<int> data;
     QMutex outputMutex;
-    static const int VECTOR_SIZE = 1000000;
 };
 
 #endif // MAINWINDOW_H
