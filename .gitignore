@@ -34,6 +34,7 @@ Thumbs.db
 *.rc
 /.qmake.cache
 /.qmake.stash
+consolidated_sourc*.txt
 
 # qtcreator generated files
 *.pro.user*
@@ -71,5 +72,3 @@ Thumbs.db
 *.dll
 *.exe
 
-consolidated_source.txt
-consolidated_source_ln.txt

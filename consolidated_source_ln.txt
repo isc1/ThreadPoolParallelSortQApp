@@ -1,6 +1,6 @@
 # === README.md ===
    1 | # ThreadPoolParallelSortQApp
-   2 | Multithreaded Example app in Qt 5 by Claude
+   2 | Multithreaded Example app in Qt 5 by Claude!!!
 #
 
 # === main.cpp ===
